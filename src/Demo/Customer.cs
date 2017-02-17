@@ -15,6 +15,4 @@ namespace Demo
 
         public string Name { get; set; }
     }
-
-
 }

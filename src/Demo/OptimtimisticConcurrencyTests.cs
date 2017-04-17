@@ -4,6 +4,7 @@ using System.Net;
 using System.Threading.Tasks;
 using Microsoft.Azure.Documents;
 using Microsoft.Azure.Documents.Client;
+using Microsoft.Azure.Documents.Linq;
 using Shouldly;
 using Xunit;
 
@@ -52,6 +53,79 @@ namespace Demo
                         new RequestOptions {AccessCondition = ac}).ShouldThrowAsync<DocumentClientException>();
 
             ex.StatusCode.ShouldBe(HttpStatusCode.PreconditionFailed);
+        }
+
+        [Fact]
+        public async Task Should_insert_multiple_customers()
+        {
+            // Setup our Database and add a new Customer
+            var dbSetup = new DatabaseSetup(_client);
+            await dbSetup.Init(DatabaseId, CollectionId);
+
+            dynamic[] customers = {
+                new Customer(Guid.NewGuid().ToString(), "Test1 Customer1"),
+                new Customer(Guid.NewGuid().ToString(), "Test1 Customer2")
+            };
+
+            var sproc = dbSetup.Client.CreateStoredProcedureQuery(dbSetup.Collection.SelfLink).Where(x => x.Id == "sp_bulkinsert").AsEnumerable().First();
+            var imported = await dbSetup.Client.ExecuteStoredProcedureAsync<int>(sproc.SelfLink, new dynamic[] { customers });
+            imported.Response.ShouldBe(2);
+        }
+
+        [Fact]
+        public async Task Should_not_insert_any()
+        {
+            // Setup our Database and add a new Customer
+            var dbSetup = new DatabaseSetup(_client);
+            await dbSetup.Init(DatabaseId, CollectionId);
+
+            string customer1Id = Guid.NewGuid().ToString();
+
+            dynamic[] customers = {
+                new Customer(customer1Id, "Test2 Customer1"),
+                new Customer(Guid.NewGuid().ToString(), "")
+            };
+
+            var sproc = dbSetup.Client.CreateStoredProcedureQuery(dbSetup.Collection.SelfLink).Where(x => x.Id == "sp_bulkinsert").AsEnumerable().First();
+            await dbSetup.Client.ExecuteStoredProcedureAsync<int>(sproc.SelfLink, new dynamic[] {customers}).ShouldThrowAsync<DocumentClientException>();
+
+            var document = (from f in dbSetup.Client.CreateDocumentQuery(dbSetup.Collection.SelfLink)
+                            where f.Id == customer1Id
+                            select f).AsEnumerable().FirstOrDefault();
+
+            document.ShouldBeNull();
+        }
+
+        [Fact]
+        public async Task Should_continue_query()
+        {
+            // Setup our Database and add a new Customer
+            var dbSetup = new DatabaseSetup(_client);
+            await dbSetup.Init(DatabaseId, CollectionId);
+
+            var addCustomer1 = new Customer(Guid.NewGuid().ToString(), "Demo1");
+            await dbSetup.AddCustomer(addCustomer1);
+            var addCustomer2 = new Customer(Guid.NewGuid().ToString(), "Demo2");
+            await dbSetup.AddCustomer(addCustomer2);
+
+            var query1 = dbSetup.Client.CreateDocumentQuery<Document>(dbSetup.Collection.SelfLink, new FeedOptions
+            {
+                MaxItemCount = 1
+            }).Where(x => x.Id == addCustomer1.Id.ToString() || x.Id == addCustomer2.Id.ToString()).AsDocumentQuery();
+
+           var result1 = await query1.ExecuteNextAsync<Document>();
+
+            var query2 = dbSetup.Client.CreateDocumentQuery<Document>(dbSetup.Collection.SelfLink, new FeedOptions
+            {
+                MaxItemCount = 1,
+                RequestContinuation = result1.ResponseContinuation
+            }).Where(x => x.Id == addCustomer1.Id.ToString() || x.Id == addCustomer2.Id.ToString()).AsDocumentQuery();
+
+            var result2 = await query2.ExecuteNextAsync<Document>();
+            result2.Count.ShouldBe(1);
+
+            var resultCustomer = (Customer) (dynamic) result2.First();
+            resultCustomer.Id.ShouldBe(addCustomer2.Id);
         }
     }
 }
